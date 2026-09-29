@@ -1,0 +1,105 @@
+{
+ "archivo": "DJI_20260603155548_0403_V.JPG",
+ "grupo": "INT\\VUELO_INTERIOR_2",
+ "tamano_px": [
+  5280,
+  3956
+ ],
+ "n_detections": 7,
+ "class_counts": {
+  "crack": 1,
+  "humidity": 6,
+  "spalling": 0
+ },
+ "total_area_cm2": 163919.38,
+ "total_area_m2": 16.3919,
+ "avg_confidence": 59.4,
+ "detections": [
+  {
+   "Clase": "crack",
+   "Confianza": 25.8,
+   "x1": 512,
+   "y1": 1024,
+   "x2": 1018,
+   "y2": 1660,
+   "Ancho_px": 506,
+   "Alto_px": 636,
+   "Area_cm2": 5438.69,
+   "Area_m2": 0.54387
+  },
+  {
+   "Clase": "humidity",
+   "Confianza": 79.6,
+   "x1": 4352,
+   "y1": 1025,
+   "x2": 5244,
+   "y2": 2176,
+   "Ancho_px": 892,
+   "Alto_px": 1151,
+   "Area_cm2": 17351.09,
+   "Area_m2": 1.73511
+  },
+  {
+   "Clase": "humidity",
+   "Confianza": 73.7,
+   "x1": 2560,
+   "y1": 1,
+   "x2": 3690,
+   "y2": 2688,
+   "Ancho_px": 1130,
+   "Alto_px": 2687,
+   "Area_cm2": 51313.64,
+   "Area_m2": 5.13136
+  },
+  {
+   "Clase": "humidity",
+   "Confianza": 67.1,
+   "x1": 0,
+   "y1": 1024,
+   "x2": 1403,
+   "y2": 3712,
+   "Ancho_px": 1403,
+   "Alto_px": 2688,
+   "Area_cm2": 63734.36,
+   "Area_m2": 6.37344
+  },
+  {
+   "Clase": "humidity",
+   "Confianza": 63.3,
+   "x1": 3958,
+   "y1": 2285,
+   "x2": 4182,
+   "y2": 2679,
+   "Ancho_px": 224,
+   "Alto_px": 394,
+   "Area_cm2": 1491.53,
+   "Area_m2": 0.14915
+  },
+  {
+   "Clase": "humidity",
+   "Confianza": 62.1,
+   "x1": 1542,
+   "y1": 1027,
+   "x2": 2176,
+   "y2": 2171,
+   "Ancho_px": 634,
+   "Alto_px": 1144,
+   "Area_cm2": 12257.5,
+   "Area_m2": 1.22575
+  },
+  {
+   "Clase": "humidity",
+   "Confianza": 44.0,
+   "x1": 3584,
+   "y1": 3073,
+   "x2": 4726,
+   "y2": 3712,
+   "Ancho_px": 1142,
+   "Alto_px": 639,
+   "Area_cm2": 12332.57,
+   "Area_m2": 1.23326
+  }
+ ],
+ "tiempo_s": 86.96,
+ "anotada": "C:\\Users\\niurka\\Documents\\HeritageDetector\\resultados\\dron_test\\INT\\VUELO_INTERIOR_2\\DJI_20260603155548_0403_V_anotada.jpg"
+}

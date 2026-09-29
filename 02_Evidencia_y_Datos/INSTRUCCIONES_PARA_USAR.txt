@@ -1,0 +1,118 @@
+============================================================
+  HERITAGE DAMAGE DETECTOR v6.5
+  Deteccion de danos en el Sillar de San Agustin (Arequipa)
+  Universidad Catolica de Santa Maria (UCSM)
+============================================================
+
+GUIA DE USO - SIN NECESIDAD DE CONOCER CODIGO
+(Explicado en palabras sencillas)
+
+--------------------------------------------------
+1) QUE VIENE EN ESTA CARPETA
+--------------------------------------------------
+  - "HeritageDetector.exe" ........... el programa (la aplicacion)
+  - "Iniciar_Heritage_Detector.bat" .. boton para abrir el programa
+  - Este archivo de instrucciones
+
+NO necesitas tener instalado Python ni nada mas.
+El programa ya incluye todo listo.
+
+--------------------------------------------------
+2) COMO ABRIR EL PROGRAMA
+--------------------------------------------------
+  PASO 1: Haga DOBLE CLIC en "Iniciar_Heritage_Detector.bat"
+  PASO 2: Aparecera una ventana negra de texto. No la cierre.
+  PASO 3: Espere unos segundos: se abrira la ventana de la aplicacion
+          (con el titulo HERITAGE DETECTOR en azul y naranja).
+  PASO 4: Cuando termine de usar el programa, cierre la ventana de la
+          aplicacion y luego presione una tecla en la ventana negra.
+
+  (Importante: siempre abra el programa desde la carpeta. No mueva
+   el exe solo a otro lugar, deje los archivos juntos en esta carpeta.)
+
+--------------------------------------------------
+3) COMO ANALIZAR FOTOS SIMPLEMENTE
+--------------------------------------------------
+  En la pantalla principal encontrara estos 4 botones del menu
+  a la izquierda: "Analisis en Campo", "Cuadro de Mandos",
+  "Historial" y "Especificacion Tecnica".
+
+  Para analizar sus fotos (lo mas comun):
+    a) Boton "Cargar Imagen(es) del Monumento"  -> elija sus fotos
+       (formato JPG, PNG o WEBP, de maximo 20 MB cada una).
+    b) Haga clic en "INICIAR PROCESAMIENTO".
+    c) Espere: el programa analizara cada foto y mostrara
+       las zonas con dano (grietas, humedad, desprendimiento).
+    d) Cuando termine, haga clic en "GUARDAR EN BASE DE DATOS"
+       si quiere guardar los resultados en linea.
+
+  No necesita tocar los controles de la derecha (calibracion).
+  Ya vienen ajustados para el sillar en el modo "Recomendado".
+
+  En la seccion "Modo de deteccion" puede elegir:
+    - "Recomendado" (por defecto): detecta mas danos de forma
+      confiable. Es el modo ideal para uso general.
+    - "Alta confiabilidad (85%)": marca solo los danos mas
+      seguros. Use este modo solo si la evaluacion lo exige,
+      porque detectara MENOS danos.
+
+  Si alguna vez los cambia, use el boton
+  "Restaurar calibracion recomendada" para volver a lo correcto.
+
+  (Los controles de "Configuracion avanzada" estan ocultos a
+   proposito para que la pantalla sea mas simple. No los toque
+   salvo que sepa claramente lo que hace.)
+
+--------------------------------------------------
+4) QUE SIGNIFICAN LOS DANOS QUE SE MARCAN
+--------------------------------------------------
+  El programa colorea cada dano detectado:
+  - ROJO        = Grietas (crack)        : fisuras en la piedra
+  - TURQUESA    = Humedad (humidity)     : manchas de humedad
+  - NARANJA     = Desprendimiento (spalling): piedra que se desprende
+
+  Ademas indica la GRAVEDAD:
+  - Verde  = Leve
+  - Amarillo = Moderada
+  - Naranja = Severa
+  - Rojo   = Critica (requiere atencion urgente)
+
+--------------------------------------------------
+5) DONDE VER LOS HISTORIALES
+--------------------------------------------------
+  - "Cuadro de Mandos": graficos y resumen de todo lo analizado.
+  - "Historial": consulta de los reportes guardados en la base de datos
+    (requiere conexion a internet, ya viene configurada).
+
+  En "Historial" puede ver la imagen ANTES / DESPUES de cualquier
+  inspeccion:
+    a) Haga CLIC sobre una fila de la tabla (sobre el nombre o los numeros).
+    b) Se abrira una ventana con dos imagenes lado a lado:
+       - "ANTES"  = la foto original (limpia).
+       - "DESPUES" = la misma foto con los rectangulos de dano marcados.
+    c) Puede cerrarla cuando termine de revisarla.
+
+  (Nota: las inspecciones guardadas ANTES de esta version no tienen
+   imagenes guardadas, por lo que no mostraran la ventana. Las nuevas
+   si la mostraran.)
+
+--------------------------------------------------
+6) SOLUCION DE PROBLEMAS RAPIDA
+--------------------------------------------------
+  - "La ventana del programa no aparece":
+    Espere unos segundos mas; la primera apertura es mas lenta.
+    Cierre la ventana negra y vuelva a hacer doble clic.
+
+  - "Windows me avisa que es un programa desconocido / SmartScreen":
+    Haga clic en "Mas informacion" y luego en "Ejecutar de todas formas".
+    Es normal: el programa no esta firmado con un certificado de pago.
+
+  - "Quiero que analice mis fotos pero no detecta nada":
+    Verifique que la foto sea de la fachada de sillar, con buena
+    luz. Use el boton "Restaurar calibracion recomendada" si los
+    controles de la derecha estan cambiados.
+
+============================================================
+  Soporte: contacto con el desarrollador del proyecto.
+  (c) UCSM - Proyecto Heritage Damage Detector v6.5
+============================================================

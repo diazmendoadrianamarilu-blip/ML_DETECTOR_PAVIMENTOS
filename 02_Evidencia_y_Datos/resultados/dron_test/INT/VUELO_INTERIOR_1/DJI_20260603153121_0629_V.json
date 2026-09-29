@@ -1,0 +1,33 @@
+{
+ "archivo": "DJI_20260603153121_0629_V.JPG",
+ "grupo": "INT\\VUELO_INTERIOR_1",
+ "tamano_px": [
+  5280,
+  3956
+ ],
+ "n_detections": 1,
+ "class_counts": {
+  "crack": 0,
+  "humidity": 1,
+  "spalling": 0
+ },
+ "total_area_cm2": 280086.81,
+ "total_area_m2": 28.0087,
+ "avg_confidence": 81.5,
+ "detections": [
+  {
+   "Clase": "humidity",
+   "Confianza": 81.5,
+   "x1": 0,
+   "y1": 0,
+   "x2": 5248,
+   "y2": 3158,
+   "Ancho_px": 5248,
+   "Alto_px": 3158,
+   "Area_cm2": 280086.81,
+   "Area_m2": 28.00868
+  }
+ ],
+ "tiempo_s": 48.6,
+ "anotada": "C:\\Users\\niurka\\Documents\\HeritageDetector\\resultados\\dron_test\\INT\\VUELO_INTERIOR_1\\DJI_20260603153121_0629_V_anotada.jpg"
+}

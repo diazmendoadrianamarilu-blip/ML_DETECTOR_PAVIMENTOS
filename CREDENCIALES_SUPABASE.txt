@@ -1,0 +1,18 @@
+﻿================================================================================
+  CREDENCIALES  ·  ENVIAR POR SEPARADO  (NO SUBIR AL REPOSITORIO NI AL ZIP)
+================================================================================
+
+Proyecto Supabase:  gosywjlocfoettpzafga
+URL:      https://gosywjlocfoettpzafga.supabase.co
+Clave:    sb_publishable_ZYILG60f1uW9jbVkuOwXaA_bzpwnj3t
+
+CÓMO USARLAS
+  1) En la carpeta Heritage_Detector, crear el archivo  .env  con EXACTAMENTE:
+SUPABASE_URL=https://gosywjlocfoettpzafga.supabase.co
+SUPABASE_KEY=sb_publishable_ZYILG60f1uW9jbVkuOwXaA_bzpwnj3t
+  2) En Supabase -> SQL Editor -> ejecutar  config_storage_historial.sql
+  3) Verificar:  streamlit run app.py  ->  debe aparecer "Supabase: conectado"
+
+  (El archivo .env ya viene excluido en el .gitignore del proyecto.)
+
+================================================================================

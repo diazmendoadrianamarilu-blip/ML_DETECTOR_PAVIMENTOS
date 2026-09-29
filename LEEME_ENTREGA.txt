@@ -1,0 +1,170 @@
+================================================================================
+  HERITAGE DAMAGE DETECTOR  ·  ENTREGA COMPLETA DEL PROYECTO
+  Detector de daños en patrimonio histórico con YOLOv8
+  UCSM · Investigación aplicada
+================================================================================
+
+Este paquete contiene TODO el proyecto listo para abrirse en VS Code, seguir
+desarrollándose y presentarse. No falta ningún archivo.
+
+
+--------------------------------------------------------------------------------
+1. QUÉ HAY QUE ENVIARLE A ADRI
+--------------------------------------------------------------------------------
+
+  📁 1_CODIGO_VSCODE.zip                (46 MB)   <-- ESTE ES EL PRINCIPAL
+        └─ Heritage_Detector/  →  se descomprime y se abre directo en VS Code
+        └─ Incluye el modelo best.pt ya entrenado (100 epochs)
+
+  📁 2_EVIDENCIA_Y_DATOS.zip            (165 MB)
+        └─ resultados/          imágenes anotadas + JSON de detecciones + resumen
+        └─ capturas/            33 capturas de pantalla de la aplicación
+        └─ datos_dron/          imágenes del dron usadas en las pruebas
+        └─ evidencia_metricas_best.csv   métricas de entrenamiento epoch por epoch
+        └─ MANUAL_USUARIO_..._con_capturas.docx   manual de usuario con figuras
+
+  📄 CREDENCIALES_SUPABASE.txt          <-- enviar por SEPARADO, no en el zip
+
+
+--------------------------------------------------------------------------------
+2. CÓMO ABRIRLO EN VS CODE
+--------------------------------------------------------------------------------
+
+  1) Descomprimir 1_CODIGO_VSCODE.zip  (la carpeta Heritage_Detector)
+  2) VS Code → File → Open Folder → seleccionar la carpeta Heritage_Detector
+  3) Abrir una terminal integrada (Ctrl + Ñ)
+  4) Crear el entorno y instalar:
+
+         python -m venv .venv
+         .venv\Scripts\activate
+         pip install -r REQUIREMENTS.TXT
+
+  5) Configurar la base de datos: copiar .env.example  →  .env  y pegar
+     las credenciales (van aparte, en CREDENCIALES_SUPABASE.txt)
+  6) En Supabase → SQL Editor → ejecutar config_storage_historial.sql  (UNA sola vez)
+
+  7) Lanzar la aplicación, hay dos versiones:
+
+         A) Versión web (la que se suele presentar)
+            streamlit run app.py
+            → se abre en http://localhost:8501
+
+         B) Versión de escritorio (la que se entrega como .exe)
+            python desktop_app.py
+
+
+--------------------------------------------------------------------------------
+3. CÓMO GENERAR DE NUEVO EL .EXE
+--------------------------------------------------------------------------------
+
+         pip install pyinstaller
+         pyinstaller HeritageDetector.spec
+
+  (o simplemente usar el HeritageDetector.exe que ya se le entregó)
+
+
+--------------------------------------------------------------------------------
+4. LO QUE YA ESTÁ HECHO Y FUNCIONA
+--------------------------------------------------------------------------------
+
+  ✓ Modelo YOLOv8 entrenado, 100 epochs, 3 clases:
+        crack (grietas) · humidity (humedad) · spalling (desprendimiento)
+  ✓ Métricas finales del entrenamiento:
+        precision 0.898 · recall 0.840 · mAP50 0.890 · mAP50-95 0.635
+  ✓ Aplicación web (Streamlit) con análisis en campo, cuadros de mando,
+    historial, especificación técnica y descarga de reportes.
+  ✓ Aplicación de escritorio (CustomTkinter) con selección de recorte,
+    detección por teselas (tiling) y calibración de umbrales.
+  ✓ Persistencia en Supabase: guardado de inspecciones, imágenes en Storage
+    y vista ANTES/DESPUÉS.
+  ✓ Sistema de alertas por gravedad de los daños.
+  ✓ Procedimiento de detección por lotes sobre carpetas de imágenes (dron).
+
+  Prueba registrada en las fotos de dron (10 imágenes, 5280×3956 px):
+        35 detecciones · 28 humedad · 5 spalling · 2 crack · 256.62 m²
+  Tiempo medio por imagen: ~60 s (equipo sin GPU, PyTorch CPU).
+
+
+--------------------------------------------------------------------------------
+5. CÓMO AGREGAR EL DATASET DE ROBOFLOW  (la consulta de Adriana)
+--------------------------------------------------------------------------------
+
+  El modelo actual (best.pt) NO se modifica al agregar el dataset.
+  El dataset etiquetado sirve para:
+
+  (a) MEJORAR EL MODELO  — es lo más conveniente. En Google Colab:
+        · Descargar el dataset en formato YOLOv8 desde Roboflow
+        · Subir best.pt como punto de partida (fine-tuning)
+        · data.yaml con las 3 clases: crack, humidity, spalling
+        · Reentrenar 30-50 epochs sobre el dataset nuevo
+        · Si las métricas mejoran, sustituir best.pt por el nuevo.
+      Ver entrenamiento_colab.ipynb, que ya tiene la estructura lista.
+
+  (b) VALIDAR EL MODELO  — medir la precisión real sobre las imágenes
+      etiquetadas y reportarla en la presentación. Es el dato que más
+      conviene tener para sustentar el sistema.
+
+  IMPORTANTE: si el dataset de Roboflow tiene OTROS nombres de clase,
+  hay que renombrarlos a crack / humidity / spalling en el data.yaml, porque
+  el modelo actual solo reconoce esas 3.
+
+
+--------------------------------------------------------------------------------
+5 BIS. SI PREGUNTAN SI EL DATASET SE PUEDE INTEGRAR "DENTRO DEL APLICATIVO"
+--------------------------------------------------------------------------------
+
+  Respuesta corta: sí, pero lo correcto NO es meterlo dentro de la app.
+
+  · Para PRESENTAR: se muestra la evaluación del modelo sobre el dataset
+    (tabla de detecciones correctas vs. anotadas). Eso sustenta el sistema.
+  · Para MEJORARLO: se reentrena best.pt y se reemplaza el archivo. La app
+    no cambia, solo el modelo.
+
+  Meter el dataset dentro de la aplicación no aporta nada: el dataset es
+  para entrenar/evaluar, no para que lo use el usuario final.
+
+
+--------------------------------------------------------------------------------
+6. ARCHIVOS DEL PROYECTO
+--------------------------------------------------------------------------------
+
+  app.py                 Aplicación web (Streamlit) — 2.700 líneas
+  desktop_app.py         Aplicación de escritorio (CustomTkinter) — 3.900 líneas
+  detection_gravity.py   Lógica de prioridad por gravedad de los daños
+  alerts_system.py       Envío de alertas
+  best.pt                Modelo YOLOv8 entrenado (el corazón del sistema)
+  config_storage_historial.sql   Esquema de la base de datos
+  HeritageDetector.spec  Configuración de PyInstaller
+  REQUIREMENTS.TXT       Dependencias
+  .env.example           Plantilla de credenciales
+  entrenamiento_colab.ipynb     Notebook de entrenamiento en Google Colab
+
+  La carpeta .git conserva todo el historial de cambios del proyecto
+  (12 commits, de "Commit inicial" a la versión final).
+
+
+--------------------------------------------------------------------------------
+7. NOTAS
+
+  · La carpeta .venv NO se incluye (son 1,5 GB y es de esta computadora).
+    Se recrea con un solo comando, según la sección 2.
+  · El modelo corre en CPU (no necesita tarjeta de video). Con GPU es
+    mucho más rápido.
+  · Las credenciales de Supabase van aparte, nunca dentro del código ni
+    del repositorio.
+
+  ⚠ IMPORTANTE — el modelo necesita ALTA RESOLUCIÓN:
+    Las fotos del dron son de 5280×3956 px. Si se analizan reducinglas a
+    640 px, el modelo NO detecta nada (0 detecciones, es normal).
+    Por eso la aplicación trabaja por TESELAS: divide la imagen en
+    cuadrados de 640 px con 20% de solapamiento y analiza cada uno.
+    Configuración usada en las pruebas que sí funcionan:
+        tile 640 · overlap 0.2 · umbrales crack 0.20 / humidity 0.30 /
+        spalling 0.60 · IoU 0.45 · GSD 0.13 cm/px
+    Si alguien prueba el modelo "a pelo" y no detecta nada, no es que esté
+    roto: es que hay que usar el modo teselas o subir imgsz a 3200+.
+    Referencia: datos_dron/run_detection.py contiene esa lógica.
+
+
+  Desarrollo: Niurka Guevara
+================================================================================
