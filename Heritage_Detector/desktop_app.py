@@ -32,6 +32,13 @@ import requests
 import threading
 from pathlib import Path
 from dotenv import load_dotenv
+from motor_deteccion import (
+    CLASES_VALIDAS, UMBRAL_ALTA_CONFIABILIDAD, UMBRAL_CONF_MIN, UMBRAL_CONF_MAX,
+    IOU_NMS, RELACION_ASPECTO_LINEAL, normalizar_clase, umbral_clase,
+    _poligono_mascara, agrupar_zonas,
+    deteccion_lineas_finas, _metricas_filamento, _orientacion_dominante, _parche_para_filiforme,
+    _es_grieta_filiforme, split_image_into_tiles, nms_boxes,
+)
 
 def _cargar_config():
     """Carga .env desde el directorio empaquetado (PyInstaller) o el directorio actual."""
@@ -154,6 +161,7 @@ COLORS = {
 }
 
 FONT_FAMILY = "Segoe UI"
+
 
 # =============================================================================
 # CLIENTE SUPABASE
@@ -487,22 +495,27 @@ def filtrar_falsos_positivos(detections, image_shape, umbrales_clase, img_bgr=No
             elif box_area < (image_area * 0.002):
                 reject = True
             elif aspect_ratio > 4.5 or inverse_aspect_ratio > 4.5:
-                umbral_min_crack = umbrales_clase.get("crack", 0.25)
+                umbral_min_crack = umbral_clase(umbrales_clase, "crack", 0.25)
                 if conf > umbral_min_crack:
                     d["Clase"] = "crack"
                     cls_name = "crack"
                 else:
                     reject = True
-        
+
         elif cls_name == "spalling":
-            umbral_min_spalling = umbrales_clase.get("spalling", 0.50)
+            umbral_min_spalling = umbral_clase(umbrales_clase, "spalling", 0.50)
             if conf < umbral_min_spalling:
                 reject = True
-        
+
         elif cls_name == "crack":
-            umbral_min_crack = umbrales_clase.get("crack", 0.25)
+            umbral_min_crack = umbral_clase(umbrales_clase, "crack", 0.25)
             if conf < umbral_min_crack:
                 reject = True
+
+        # Control final de mínimo: ninguna detección por debajo del umbral de su
+        # clase (ya reclasificada) llega a pantalla ni a Supabase.
+        if cls_name not in CLASES_VALIDAS or conf < umbral_clase(umbrales_clase, cls_name, 0.25):
+            reject = True
         
         # --- FILTRO ANTI-VEGETACION / ANTI-CIELO (el sillar no es verde ni azul cielo) ---
         if not reject and img_bgr is not None:
@@ -585,7 +598,19 @@ def filtrar_falsos_positivos(detections, image_shape, umbrales_clase, img_bgr=No
                         reject = True
                     elif rango_mat < 15.0 and not modo_recorte:
                         reject = True
-                    elif modo_recorte:
+                    elif not modo_recorte:
+                        # CALIBRACION AUTOMATICA POR GEOMETRIA (vista global):
+                        # una caja muy alargada (relacion de aspecto >= 4) puede ser
+                        # una grieta, pero tambien la sombra de una cornisa, una
+                        # junta o un borde recto, que YOLO puntua ~50-60%. Si la
+                        # red no esta segura (< 85%), se exige la misma confirmacion
+                        # filiforme del modo recorte: la grieta real es sinuosa y de
+                        # anchura variable; la sombra de cornisa es recta y uniforme.
+                        if (conf < UMBRAL_ALTA_CONFIABILIDAD
+                                and max(aspect_ratio, inverse_aspect_ratio) >= RELACION_ASPECTO_LINEAL
+                                and not _es_grieta_filiforme(_parche_para_filiforme(patch))):
+                            reject = True
+                    else:
                         # En modo recorte el umbral de confianza se relaja (crack 0.10) y el
                         # filtro de material solo revisaba rango<15; con eso volvieron a pasar
                         # falsos positivos estructurales (techo corrugado, cables, suelo con
@@ -610,251 +635,6 @@ def filtrar_falsos_positivos(detections, image_shape, umbrales_clase, img_bgr=No
     
     return filtered_detections
 
-def agrupar_zonas(detections, umbral_toc = 0.10):
-    """Fusiona cuadros de la misma clase que pertenecen a la misma zona afectada.
-    Dos cuadros se agrupan si, al expandir cada uno un 10% de su tamano, sus
-    rectangulos se siguen tocando. El resultado es UN recuadro que abarca toda
-    el area afectada (unice de grupo), con la confianza maxima del grupo."""
-    detections = list(detections)
-    n = len(detections)
-    if n == 0:
-        return []
-
-    parent = list(range(n))
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[ra] = rb
-
-    # unir por clase y cercania (rectangulos expandidos que se tocan)
-    for i in range(n):
-        di = detections[i]
-        wi = di["Ancho_px"]; hi = di["Alto_px"]
-        exi = max(wi * umbral_toc, 4); eyi = max(hi * umbral_toc, 4)
-        ix1, iy1, ix2, iy2 = di["x1"]-exi, di["y1"]-eyi, di["x2"]+exi, di["y2"]+eyi
-        for j in range(i+1, n):
-            dj = detections[j]
-            if di["Clase"] != dj["Clase"]:
-                continue
-            wj = dj["Ancho_px"]; hj = dj["Alto_px"]
-            exj = max(wj * umbral_toc, 4); eyj = max(hj * umbral_toc, 4)
-            jx1, jy1, jx2, jy2 = dj["x1"]-exj, dj["y1"]-eyj, dj["x2"]+exj, dj["y2"]+eyj
-            if ix1 <= jx2 and jx1 <= ix2 and iy1 <= jy2 and jy1 <= iy2:
-                union(i, j)
-
-    grupos = {}
-    for k in range(n):
-        grupos.setdefault(find(k), []).append(detections[k])
-
-    zonas = []
-    for miembros in grupos.values():
-        x1 = min(m["x1"] for m in miembros)
-        y1 = min(m["y1"] for m in miembros)
-        x2 = max(m["x2"] for m in miembros)
-        y2 = max(m["y2"] for m in miembros)
-        conf = max(m["Confianza"] for m in miembros)
-        zonas.append({
-            "Clase": miembros[0]["Clase"],
-            "Confianza": conf,
-            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-            "Ancho_px": x2 - x1,
-            "Alto_px": y2 - y1,
-        })
-
-    zonas.sort(key=lambda z: (z["Clase"], -z["Confianza"]))
-    return zonas
-
-def deteccion_lineas_finas(gray_img, sigmas=(1, 2, 3)):
-    """Detecta líneas oscuras filiformes (grietas finas sobre pintura) mediante
-    análisis multiescala del Hessiano, sin depender de la red neuronal.
-    Una grieta = valle oscuro sobre fondo claro: la curvatura dominante del
-    Hessiano es POSITIVA (lambda1 > 0) y la perpendicular es ~0 (lambda2 ~ 0).
-    Una mancha oscura (blob) tiene ambas curvaturas positivas grandes; se rechaza
-    exigiendo |lambda2| << |lambda1|. Devuelve mapa de respuesta 0-255."""
-    H = gray_img.astype(np.float32) / 255.0
-    response = np.zeros_like(H, dtype=np.float32)
-
-    for s in sigmas:
-        if s > 1:
-            blur = cv2.GaussianBlur(H, (0, 0), sigmaX=s, sigmaY=s)
-        else:
-            blur = H
-
-        gx = cv2.Sobel(blur, cv2.CV_32F, 1, 0, ksize=3)
-        gy = cv2.Sobel(blur, cv2.CV_32F, 0, 1, ksize=3)
-        hxx = cv2.Sobel(gx, cv2.CV_32F, 1, 0, ksize=3)
-        hyy = cv2.Sobel(gy, cv2.CV_32F, 0, 1, ksize=3)
-        hxy = cv2.Sobel(gx, cv2.CV_32F, 0, 1, ksize=3)
-
-        trace = hxx + hyy
-        disc = np.sqrt(np.maximum((hxx - hyy) ** 2 / 4.0 + hxy ** 2, 0))
-        lambda1 = trace / 2 + disc
-        lambda2 = trace / 2 - disc
-
-        # Ojo: lambda1 es el de mayor valor (puede ser positivo para valle).
-        # Línea oscura: lambda1 > 0 grande, |lambda2| pequeño.
-        lam1_pos = np.maximum(lambda1, 0)
-        lam2_abs = np.abs(lambda2)
-        lam1_abs = np.maximum(np.abs(lambda1), 1e-6)
-        # Radio de anisotropía: penaliza blobs (ambas curvaturas grandes)
-        anisotropy = 1.0 - np.minimum(lam2_abs / lam1_abs, 1.0)
-        sigma_resp = lam1_pos * anisotropy
-        response = np.maximum(response, sigma_resp)
-
-    # Normalizar a 0-255
-    rmax = float(np.max(response))
-    if rmax <= 0:
-        return np.zeros_like(gray_img)
-    return (response / rmax * 255.0).astype(np.uint8)
-
-
-def _metricas_filamento(mask, resp_sub, gx_sub, gy_sub, contour):
-    """Metricas de forma de un filamento: tortuosidad, dispersion angular,
-    constancia de anchura y orientacion dominante.
-    Devuelve None si el componente no es medible (pocos pixeles)."""
-    ys, xs = np.nonzero(mask)
-    if len(xs) < 30:
-        return None
-    pts = np.column_stack((xs.astype(np.float64), ys.astype(np.float64)))
-    mean = pts.mean(axis=0)
-    pts_c = pts - mean
-    cov = np.cov(pts_c.T)
-    try:
-        evals, evecs = np.linalg.eigh(cov)
-    except np.linalg.LinAlgError:
-        return None
-    if evals[1] <= 1e-6:
-        return None
-    main_axis = evecs[:, 1]
-    t = pts_c @ main_axis
-    tmin, tmax = float(t.min()), float(t.max())
-    # Longitud de arco approximada (mitad del perimetro de la linea)
-    arc = float(cv2.arcLength(contour, True)) / 2.0
-    # Distancia recta entre los extremos proyectados en el eje principal
-    p1 = mean + main_axis * tmin
-    p2 = mean + main_axis * tmax
-    straight = float(np.linalg.norm(p2 - p1))
-    tortuosidad = arc / max(straight, 1e-6)
-    # Anchura y constancia de anchura: distance transform a lo largo del eje
-    dt = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 5)
-    span = (tmax - tmin) if tmax - tmin > 0 else 1.0
-    nbins = int(max(5, min(30, span / 3.0)))
-    if nbins < 3:
-        return None
-    anchos = []
-    for b in range(nbins):
-        lo = tmin + span * b / nbins
-        hi = tmin + span * (b + 1) / nbins
-        sel = (t >= lo) & (t < hi)
-        if int(sel.sum()) >= 3:
-            anchos.append(2.0 * float(dt[ys[sel], xs[sel]].max()))
-    if len(anchos) < 3:
-        return None
-    std_ancho = float(np.std(anchos))
-    # Orientacion local en los pixeles de la linea (gradiente del mapa de respuesta)
-    ang = np.arctan2(gy_sub[mask > 0], gx_sub[mask > 0])
-    if ang.size < 30:
-        return None
-    r = float(np.hypot(np.cos(2 * ang).mean(), np.sin(2 * ang).mean()))
-    r = max(min(r, 1.0), 1e-12)
-    std_ang = float(np.degrees(np.sqrt(-2.0 * np.log(r))) / 1.0)
-    orient = float(np.degrees(np.arctan2(main_axis[1], main_axis[0])) % 180.0)
-    return {
-        "tortuosidad": tortuosidad,
-        "std_ang_deg": std_ang,
-        "std_ancho_px": std_ancho,
-        "ancho_medio_px": float(np.mean(anchos)),
-        "orientacion_deg": orient,
-        "arco_px": arc,
-        "longitud_px": tmax - tmin,
-    }
-
-
-def _orientacion_dominante(binary_edges):
-    """Orienta cion dominante (en grados 0-180) de las lineas del crop, usando
-    Hough. Devuelve None si no hay lineas significativas (no se penaliza)."""
-    lines = cv2.HoughLines(binary_edges, 1, np.pi / 180, threshold=90)
-    if lines is None or len(lines) == 0:
-        return None
-    bins = np.zeros(36, dtype=np.float64)
-    for l in lines:
-        theta_deg = ((l[0][1] * 180.0 / np.pi) % 180.0) + 90.0
-        idx = int(theta_deg // 5) % 36
-        bins[idx] += float(l[0][0])
-    return float((int(np.argmax(bins)) * 5) % 180.0)
-
-
-def _es_grieta_filiforme(bgr_patch, tort_min=1.25, elong_min=4.0, largo_min=15.0,
-                         std_ancho_min=0.3, dom_min=2.0):
-    """Confirma si la caja YOLO de crack (modo recorte) contiene una grieta real.
-
-    Ya descartado el patron con textura excesiva (std alto: techo corrugado,
-    suelo con sombras) y la vegetacion/cielo, aqui se exige que entre los
-    filamentos GRANDES de la caja (area de al menos 1/2 del mayor) exista una
-    linea con geometria de grieta: sinuosa (tortuosidad alta), delgada
-    (elongacion alta), de anchura VARIABLE (std_ancho; un cable/cuerda recta y
-    de anchura constante falla aqui) y de longitud suficiente.
-
-    Calibrado en la imagen real (escala 2x del recorte): la grieta real tiene
-    tortuosidad 1.30-1.35 en sus ramas grandes; el techo corrugado, el cable de
-    campana, arcos y muros lejanos no superan 1.16 en ningun componente
-    dominante (sus fragmentos sinuosos son pequenos, < area del mayor/2, y
-    quedan descartados junto con el ruido). El filtro de textura (std<=15)
-    elimina aparte los FPs estructurales periodicos aunque sus ramas rocen la
-    tortuosidad. El uso de "todos los grandes" (no solo el mayor absoluto) hace
-    la decision robusta al recorte de la caja por tiles (bordes).
-
-    Devuelve True si es una grieta plausible."""
-    if bgr_patch is None or bgr_patch.size == 0:
-        return False
-    gray = cv2.cvtColor(bgr_patch.astype(np.uint8), cv2.COLOR_BGR2GRAY)
-    gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
-    resp = deteccion_lineas_finas(gray)
-    if resp.max() == 0:
-        return False
-    thr = max(int(cv2.threshold(resp, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0]), 40)
-    binary = cv2.threshold(resp, max(40, thr - 15), 255, cv2.THRESH_BINARY)[1]
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
-    contornos, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    if not contornos:
-        return False
-
-    gx = cv2.Sobel(resp, cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(resp, cv2.CV_32F, 0, 1, ksize=3)
-
-    componentes = []
-    for c in contornos:
-        area = cv2.contourArea(c)
-        if area < 30:
-            continue
-        bx, by, bw, bh = cv2.boundingRect(c)
-        mask = np.zeros((bh, bw), dtype=np.uint8)
-        cv2.drawContours(mask, [c], -1, 255, -1, offset=(-bx, -by))
-        met = _metricas_filamento(mask, resp[by:by + bh, bx:bx + bw],
-                                  gx[by:by + bh, bx:bx + bw], gy[by:by + bh, bx:bx + bw], c)
-        if not met:
-            continue
-        met["area"] = float(area)
-        met["elongacion"] = met["longitud_px"] / max(met["ancho_medio_px"], 1e-6)
-        componentes.append(met)
-    if not componentes:
-        return False
-
-    area_mayor = max(m["area"] for m in componentes)
-    umbral_area = area_mayor / dom_min
-    grandes = [m for m in componentes if m["area"] >= umbral_area]
-    return any(m["tortuosidad"] >= tort_min and
-               m["elongacion"] >= elong_min and
-               m["longitud_px"] >= largo_min and
-               m["std_ancho_px"] >= std_ancho_min
-               for m in grandes)
 
 
 def candidatos_grietas_finas(gray_img, area_min=60, ampliar=1.5,
@@ -1030,65 +810,6 @@ def dibujar_cajas(img_cv2, detections):
     
     return img_cv2
 
-def split_image_into_tiles(image_np, tile_size, overlap):
-    """Divide imagen en tiles"""
-    h, w = image_np.shape[:2]
-    stride = int(tile_size * (1 - overlap))
-    tiles = []
-    
-    for y in range(0, h - tile_size + 1, stride):
-        for x in range(0, w - tile_size + 1, stride):
-            if y + tile_size > h:
-                y = h - tile_size
-            if x + tile_size > w:
-                x = w - tile_size
-            
-            tile = image_np[y:y+tile_size, x:x+tile_size]
-            tiles.append((tile, x, y))
-            
-            if x + tile_size == w:
-                break
-        if y + tile_size == h:
-            break
-    
-    return tiles
-
-def nms_boxes(boxes, scores, iou_threshold=0.5):
-    """Non-Maximum Suppression por clase"""
-    if len(boxes) == 0:
-        return []
-    
-    boxes = np.array(boxes).astype(np.float32)
-    scores = np.array(scores)
-    
-    x1 = boxes[:, 0]
-    y1 = boxes[:, 1]
-    x2 = boxes[:, 2]
-    y2 = boxes[:, 3]
-    
-    areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-    
-    order = scores.argsort()[::-1]
-    keep = []
-    
-    while order.size > 0:
-        i = order[0]
-        keep.append(i)
-        
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-        
-        w = np.maximum(0.0, xx2 - xx1 + 1)
-        h = np.maximum(0.0, yy2 - yy1 + 1)
-        inter = w * h
-        
-        ovr = inter / (areas[i] + areas[order[1:]] - inter)
-        inds = np.where(ovr <= iou_threshold)[0]
-        order = order[inds + 1]
-    
-    return keep
 
 def procesar_imagen_completa(model, image_path, class_thresholds, iou_threshold,
                               cm_per_pixel, tile_size=640, overlap=0.2, use_tiling=True,
@@ -1115,12 +836,12 @@ def procesar_imagen_completa(model, image_path, class_thresholds, iou_threshold,
             if progress_callback:
                 progress_callback(idx / (total_tiles + 1))
             
-            tile_rgb = cv2.cvtColor(tile, cv2.COLOR_BGR2RGB)
+            # ultralytics asume BGR en arreglos numpy: se pasa el tile BGR tal cual
             
             try:
                 t0 = time.time()
                 results = model.predict(
-                    source=tile_rgb, imgsz=tile_size, conf=0.05, iou=iou_threshold,
+                    source=tile, imgsz=tile_size, conf=0.05, iou=iou_threshold,
                     verbose=False, show=False, augment=True,
                     agnostic_nms=False, retina_masks=True,
                     half=torch.cuda.is_available()
@@ -1141,12 +862,14 @@ def procesar_imagen_completa(model, image_path, class_thresholds, iou_threshold,
                 if results[0].boxes is None:
                     continue
                 
-                for box in results[0].boxes:
+                for i, box in enumerate(results[0].boxes):
                     cls_id = int(box.cls[0])
-                    cls_name = model.names.get(cls_id, f"class_{cls_id}")
+                    cls_name = normalizar_clase(model.names.get(cls_id, ""))
+                    if cls_name is None:
+                        continue
                     conf = float(box.conf[0])
-                    
-                    if conf < class_thresholds.get(cls_name, 0.05):
+
+                    if conf < umbral_clase(class_thresholds, cls_name, 0.05):
                         continue
                     
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -1169,6 +892,7 @@ def procesar_imagen_completa(model, image_path, class_thresholds, iou_threshold,
                         "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                         "Ancho_px": x2 - x1,
                         "Alto_px": y2 - y1,
+                        "_poly": _poligono_mascara(results[0], i, x_off, y_off),
                     })
             except Exception as e:
                 inference_log.append({
@@ -1192,12 +916,12 @@ def procesar_imagen_completa(model, image_path, class_thresholds, iou_threshold,
                 
                 tile_z = cv2.resize(tile, (tile_size * 2, tile_size * 2),
                                     interpolation=cv2.INTER_LANCZOS4)
-                tile_z_rgb = cv2.cvtColor(tile_z, cv2.COLOR_BGR2RGB)
+                # ultralytics asume BGR en arreglos numpy (no convertir a RGB)
                 
                 try:
                     t0 = time.time()
                     results = model.predict(
-                        source=tile_z_rgb, imgsz=tile_size * 2, conf=0.05, iou=iou_threshold,
+                        source=tile_z, imgsz=tile_size * 2, conf=0.05, iou=iou_threshold,
                         verbose=False, show=False, augment=True,
                         agnostic_nms=False, retina_masks=True,
                         half=torch.cuda.is_available()
@@ -1214,12 +938,14 @@ def procesar_imagen_completa(model, image_path, class_thresholds, iou_threshold,
                     if n_dets == 0 or results[0].boxes is None:
                         continue
                     
-                    for box in results[0].boxes:
+                    for i, box in enumerate(results[0].boxes):
                         cls_id = int(box.cls[0])
-                        cls_name = model.names.get(cls_id, f"class_{cls_id}")
+                        cls_name = normalizar_clase(model.names.get(cls_id, ""))
+                        if cls_name is None:
+                            continue
                         conf = float(box.conf[0])
-                        
-                        if conf < class_thresholds.get(cls_name, 0.05):
+
+                        if conf < umbral_clase(class_thresholds, cls_name, 0.05):
                             continue
                         
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -1243,7 +969,8 @@ def procesar_imagen_completa(model, image_path, class_thresholds, iou_threshold,
                             "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                             "Ancho_px": x2 - x1,
                             "Alto_px": y2 - y1,
-                            "zoom_x2": True
+                            "zoom_x2": True,
+                            "_poly": _poligono_mascara(results[0], i, x_off, y_off, escala=2),
                         })
                 except Exception as e:
                     inference_log.append({
@@ -1259,18 +986,21 @@ def procesar_imagen_completa(model, image_path, class_thresholds, iou_threshold,
         if all_detections_raw:
             boxes_by_class = {}
             scores_by_class = {}
-            
+            polys_by_class = {}
+
             for d in all_detections_raw:
                 cls = d["Clase"]
                 boxes_by_class.setdefault(cls, []).append([d["x1"], d["y1"], d["x2"], d["y2"]])
                 scores_by_class.setdefault(cls, []).append(d["Confianza"])
+                polys_by_class.setdefault(cls, []).append(d.get("_poly"))
             
             final_detections = []
-            # spalling con IoU mas estricto: evita cajas duplicadas superpuestas en bloques contiguos
-            iou_por_clase = {"spalling": 0.35}
+            # NMS por clase con el mismo IoU para las 3 clases (0.45 por defecto).
+            # Los duplicados de spalling en bloques contiguos los resuelve despues
+            # agrupar_zonas, sin contar dos veces el area.
             for cls, boxes in boxes_by_class.items():
                 scores = scores_by_class[cls]
-                keep = nms_boxes(boxes, scores, iou_por_clase.get(cls, iou_threshold))
+                keep = nms_boxes(boxes, scores, iou_threshold)
                 
                 for idx in keep:
                     d = {
@@ -1280,12 +1010,13 @@ def procesar_imagen_completa(model, image_path, class_thresholds, iou_threshold,
                         "x2": boxes[idx][2], "y2": boxes[idx][3],
                         "Ancho_px": boxes[idx][2] - boxes[idx][0],
                         "Alto_px": boxes[idx][3] - boxes[idx][1],
+                        "_poly": polys_by_class[cls][idx],
                     }
                     final_detections.append(d)
         else:
             final_detections = []
     else:
-        img_rgb = cv2.cvtColor(img_cv2, cv2.COLOR_BGR2RGB)
+        # ultralytics asume BGR en arreglos numpy: se pasa la imagen BGR
         imgsz_options = [1536, 1280, 960, 640] if max(w, h) > 800 else [1280, 640]
         
         results = None
@@ -1293,7 +1024,7 @@ def procesar_imagen_completa(model, image_path, class_thresholds, iou_threshold,
             try:
                 t0 = time.time()
                 results = model.predict(
-                    source=img_rgb, imgsz=imgsz, conf=0.05, iou=iou_threshold,
+                    source=img_cv2, imgsz=imgsz, conf=0.05, iou=iou_threshold,
                     verbose=False, show=False, augment=True,
                     agnostic_nms=False, retina_masks=True,
                     half=torch.cuda.is_available()
@@ -1316,12 +1047,14 @@ def procesar_imagen_completa(model, image_path, class_thresholds, iou_threshold,
         
         final_detections = []
         if results is not None and results[0].boxes is not None:
-            for box in results[0].boxes:
+            for i, box in enumerate(results[0].boxes):
                 cls_id = int(box.cls[0])
-                cls_name = model.names.get(cls_id, f"class_{cls_id}")
+                cls_name = normalizar_clase(model.names.get(cls_id, ""))
+                if cls_name is None:
+                    continue
                 conf = float(box.conf[0])
-                
-                if conf < class_thresholds.get(cls_name, 0.25):
+
+                if conf < umbral_clase(class_thresholds, cls_name, 0.25):
                     continue
                 
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -1331,6 +1064,7 @@ def procesar_imagen_completa(model, image_path, class_thresholds, iou_threshold,
                     "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                     "Ancho_px": x2 - x1,
                     "Alto_px": y2 - y1,
+                    "_poly": _poligono_mascara(results[0], i),
                 })
     
     detections_filtradas = filtrar_falsos_positivos(final_detections, img_cv2.shape, class_thresholds, img_cv2, modo_recorte=modo_recorte)
@@ -1341,7 +1075,9 @@ def procesar_imagen_completa(model, image_path, class_thresholds, iou_threshold,
     detections_filtradas = agrupar_zonas(detections_filtradas)
     
     for d in detections_filtradas:
-        area_cm2 = (d["Ancho_px"] * d["Alto_px"]) * (cm_per_pixel ** 2)
+        # Area real de la zona (union sin solapes), no la del recuadro envolvente
+        area_px = d.get("Area_px", d["Ancho_px"] * d["Alto_px"])
+        area_cm2 = area_px * (cm_per_pixel ** 2)
         d["Area_cm2"] = round(area_cm2, 2)
         d["Area_m2"] = round(area_cm2 / 10000, 5)
     
@@ -1413,7 +1149,7 @@ class HeritageDetectorDesktop(ctk.CTk):
         self.last_queued_paths = []
         
         self.class_thresholds = {"crack": 0.20, "humidity": 0.30, "spalling": 0.60}
-        self.iou_threshold = 0.45
+        self.iou_threshold = IOU_NMS
         self.cm_per_pixel = 0.13
         self.use_tiling = True
         self.tile_size = 640
@@ -1638,7 +1374,7 @@ class HeritageDetectorDesktop(ctk.CTk):
         
         ctk.CTkLabel(self.adv_frame, text="IoU Threshold:", font=(FONT_FAMILY, 10), text_color=COLORS["text_primary"], anchor="w").pack(fill="x", pady=(8, 0), padx=10)
         self.slider_iou = ctk.CTkSlider(self.adv_frame, from_=0.1, to=0.9, number_of_steps=16, command=lambda v: self.update_label(self.lbl_iou, v))
-        self.slider_iou.set(0.45)
+        self.slider_iou.set(IOU_NMS)
         self.slider_iou.pack(fill="x", pady=2, padx=10)
         self.lbl_iou = ctk.CTkLabel(self.adv_frame, text="45%", font=(FONT_FAMILY, 9, "bold"), text_color=COLORS["text_primary"])
         self.lbl_iou.pack()
@@ -2038,9 +1774,13 @@ class HeritageDetectorDesktop(ctk.CTk):
         # En modo "foto lejana" se relajan los umbrales de crack y humedad: los
         # rasgos finos lejanos bajan su score, y al estar el recorte enfocado por
         # el usuario hay menos superficie disponible para falsos positivos.
-        thresholds = dict(self.class_thresholds)
-        thresholds["crack"] = min(thresholds.get("crack", 0.20), 0.10)
-        thresholds["humidity"] = min(thresholds.get("humidity", 0.30), 0.20)
+        # En "Alta confiabilidad (85%)" no se relaja nada: el piso del 85% se
+        # mantiene también en la zona recortada.
+        alta_conf = self._modo_alta_confiabilidad()
+        thresholds = self._leer_umbrales()
+        if not alta_conf:
+            thresholds["crack"] = min(thresholds.get("crack", 0.20), 0.10)
+            thresholds["humidity"] = min(thresholds.get("humidity", 0.30), 0.20)
         tile_size = self.tile_size
         overlap = self.overlap
         iou_thr = self.iou_threshold
@@ -2065,13 +1805,16 @@ class HeritageDetectorDesktop(ctk.CTk):
             # de dominio o falta de resolución. Solo se muestra como AYUDA en la
             # zona recortada, nunca sustituye a la red: la grieta requiere
             # confirmación en campo.
+            # En modo 85% no se muestran: su confianza (50%) es fija y no
+            # proviene de la red, por lo que serían detecciones dudosas.
             posibles = []
             if result.get("success") is True:
                 try:
                     gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
                     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
                     gray_clahe = clahe.apply(gray_crop)
-                    for cand in candidatos_grietas_finas(gray_clahe):
+                    candidatos = [] if alta_conf else candidatos_grietas_finas(gray_clahe)
+                    for cand in candidatos:
                         # Solo reportar candidatos al menos tan largos como un
                         # sisma real apreciable (~1 cm) en escala de recorte
                         posibles.append({
@@ -2151,8 +1894,26 @@ class HeritageDetectorDesktop(ctk.CTk):
         self.use_tiling = self.chk_tiling.get()
 
     def on_threshold_change(self, label, value):
-        """Actualiza el texto del umbral cuando el usuario mueve el slider."""
+        """Actualiza el texto del umbral cuando el usuario mueve el slider.
+        Bajar un umbral por debajo del 85% saca la app del modo de alta
+        confiabilidad (el radio deja de estar marcado) para no ocultar el cambio."""
         self.update_label(label, value)
+        if self._modo_alta_confiabilidad() and value < UMBRAL_ALTA_CONFIABILIDAD - 1e-6:
+            self.preset_var.set("personalizado")
+
+    def _modo_alta_confiabilidad(self):
+        return self.preset_var.get() == "alto"
+
+    def _leer_umbrales(self):
+        """Umbrales por clase de los sliders, acotados a [mín, máx]. En modo
+        'Alta confiabilidad' ninguna clase queda por debajo del 85%."""
+        umbrales = {
+            "crack": self.slider_crack.get(),
+            "humidity": self.slider_humidity.get(),
+            "spalling": self.slider_spalling.get(),
+        }
+        piso = UMBRAL_ALTA_CONFIABILIDAD if self._modo_alta_confiabilidad() else UMBRAL_CONF_MIN
+        return {cls: min(max(v, piso), UMBRAL_CONF_MAX) for cls, v in umbrales.items()}
 
     def toggle_advanced(self):
         """Muestra u oculta la configuracion avanzada (para evitar confusiones al hacer scroll)."""
@@ -2176,19 +1937,18 @@ class HeritageDetectorDesktop(ctk.CTk):
             self.update_label(self.lbl_humidity, 0.30)
             self.update_label(self.lbl_spalling, 0.60)
         elif modo == "alto":
-            self.slider_crack.set(0.85)
-            self.slider_humidity.set(0.85)
-            self.slider_spalling.set(0.85)
-            self.update_label(self.lbl_crack, 0.85)
-            self.update_label(self.lbl_humidity, 0.85)
-            self.update_label(self.lbl_spalling, 0.85)
+            for slider, lbl in ((self.slider_crack, self.lbl_crack),
+                                (self.slider_humidity, self.lbl_humidity),
+                                (self.slider_spalling, self.lbl_spalling)):
+                slider.set(UMBRAL_ALTA_CONFIABILIDAD)
+                self.update_label(lbl, UMBRAL_ALTA_CONFIABILIDAD)
 
     def restore_recommended_calibration(self):
         """Restaura la calibracion optima recomendada para sillar."""
         self.preset_var.set("recomendado")
         self.apply_preset()
-        self.slider_iou.set(0.45)
-        self.update_label(self.lbl_iou, 0.45)
+        self.slider_iou.set(IOU_NMS)
+        self.update_label(self.lbl_iou, IOU_NMS)
         messagebox.showinfo("Calibración", "Calibración restablecida al modo recomendado para sillar (Crack 20%, Humedad 30%, Desprendimiento 60%). Esto detecta más daños de forma confiable.\n\nSi la evaluación exige confiabilidad alta, elija el modo 'Alta confiabilidad (85%)'.")
     
     def load_image(self):
@@ -2306,11 +2066,7 @@ class HeritageDetectorDesktop(ctk.CTk):
         )
         self.lbl_waiting.pack(pady=20)
         
-        self.class_thresholds = {
-            "crack": self.slider_crack.get(),
-            "humidity": self.slider_humidity.get(),
-            "spalling": self.slider_spalling.get()
-        }
+        self.class_thresholds = self._leer_umbrales()
         self.iou_threshold = self.slider_iou.get()
         
         try:

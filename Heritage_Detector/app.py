@@ -31,6 +31,11 @@ import os
 import html
 import re
 from dotenv import load_dotenv
+from motor_deteccion import (
+    CLASES_VALIDAS, UMBRAL_ALTA_CONFIABILIDAD, IOU_NMS, RELACION_ASPECTO_LINEAL,
+    normalizar_clase, umbral_clase, _poligono_mascara, agrupar_zonas,
+    _parche_para_filiforme, _es_grieta_filiforme, split_image_into_tiles, nms_boxes,
+)
 
 # >>> CORRECCION 1: Cargar variables de entorno
 load_dotenv()
@@ -334,22 +339,27 @@ def filtrar_falsos_positivos(detections, image_shape, umbrales_clase, img_bgr=No
             elif box_area < (image_area * 0.002):
                 reject = True
             elif aspect_ratio > 4.5 or inverse_aspect_ratio > 4.5:
-                umbral_min_crack = umbrales_clase.get("crack", 0.25)
+                umbral_min_crack = umbral_clase(umbrales_clase, "crack", 0.25)
                 if conf > umbral_min_crack:
                     d["Clase"] = "crack"
                     cls_name = "crack"
                 else:
                     reject = True
-        
+
         elif cls_name == "spalling":
-            umbral_min_spalling = umbrales_clase.get("spalling", 0.50)
+            umbral_min_spalling = umbral_clase(umbrales_clase, "spalling", 0.50)
             if conf < umbral_min_spalling:
                 reject = True
-        
+
         elif cls_name == "crack":
-            umbral_min_crack = umbrales_clase.get("crack", 0.25)
+            umbral_min_crack = umbral_clase(umbrales_clase, "crack", 0.25)
             if conf < umbral_min_crack:
                 reject = True
+
+        # Control final de minimo: ninguna deteccion por debajo del umbral de su
+        # clase (ya reclasificada) llega a pantalla ni a Supabase.
+        if cls_name not in CLASES_VALIDAS or conf < umbral_clase(umbrales_clase, cls_name, 0.25):
+            reject = True
         
         # --- FILTRO ANTI-VEGETACION / ANTI-CIELO (el sillar no es verde ni azul cielo) ---
         if not reject and img_bgr is not None:
@@ -428,71 +438,19 @@ def filtrar_falsos_positivos(detections, image_shape, umbrales_clase, img_bgr=No
                         dark_p1 = float(np.percentile(patch, 1))
                         if (float(np.mean(patch)) - dark_p1) < 8.0:
                             reject = True
+                    # CALIBRACION AUTOMATICA POR GEOMETRIA (misma regla que desktop_app):
+                    # caja muy alargada y red no segura (< 85%) -> se exige que la linea
+                    # sea sinuosa y de anchura variable; la sombra de cornisa es recta.
+                    if (not reject and conf < UMBRAL_ALTA_CONFIABILIDAD
+                            and max(aspect_ratio, inverse_aspect_ratio) >= RELACION_ASPECTO_LINEAL
+                            and not _es_grieta_filiforme(_parche_para_filiforme(patch))):
+                        reject = True
         
         if not reject:
             d["Confianza"] = round(float(conf), 4)
             filtered_detections.append(d)
     
     return filtered_detections
-
-def agrupar_zonas(detections, umbral_toc = 0.10):
-    """Fusiona cuadros de la misma clase que pertenecen a la misma zona afectada.
-    Dos cuadros se agrupan si, al expandir cada uno un 10% de su tamano, sus
-    rectangulos se siguen tocando. El resultado es UN recuadro que abarca toda
-    el area afectada (unice de grupo), con la confianza maxima del grupo."""
-    detections = list(detections)
-    n = len(detections)
-    if n == 0:
-        return []
-
-    parent = list(range(n))
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[ra] = rb
-
-    # unir por clase y cercania (rectangulos expandidos que se tocan)
-    for i in range(n):
-        di = detections[i]
-        wi = di["Ancho_px"]; hi = di["Alto_px"]
-        exi = max(wi * umbral_toc, 4); eyi = max(hi * umbral_toc, 4)
-        ix1, iy1, ix2, iy2 = di["x1"]-exi, di["y1"]-eyi, di["x2"]+exi, di["y2"]+eyi
-        for j in range(i+1, n):
-            dj = detections[j]
-            if di["Clase"] != dj["Clase"]:
-                continue
-            wj = dj["Ancho_px"]; hj = dj["Alto_px"]
-            exj = max(wj * umbral_toc, 4); eyj = max(hj * umbral_toc, 4)
-            jx1, jy1, jx2, jy2 = dj["x1"]-exj, dj["y1"]-eyj, dj["x2"]+exj, dj["y2"]+eyj
-            if ix1 <= jx2 and jx1 <= ix2 and iy1 <= jy2 and jy1 <= iy2:
-                union(i, j)
-
-    grupos = {}
-    for k in range(n):
-        grupos.setdefault(find(k), []).append(detections[k])
-
-    zonas = []
-    for miembros in grupos.values():
-        x1 = min(m["x1"] for m in miembros)
-        y1 = min(m["y1"] for m in miembros)
-        x2 = max(m["x2"] for m in miembros)
-        y2 = max(m["y2"] for m in miembros)
-        conf = max(m["Confianza"] for m in miembros)
-        zonas.append({
-            "Clase": miembros[0]["Clase"],
-            "Confianza": conf,
-            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-            "Ancho_px": x2 - x1,
-            "Alto_px": y2 - y1,
-        })
-
-    zonas.sort(key=lambda z: (z["Clase"], -z["Confianza"]))
-    return zonas
 
 # --- DIBUJADO DE CAJAS ---
 def dibujar_cajas_y_segmentos(img_cv2, detections):
@@ -518,60 +476,6 @@ def dibujar_cajas_y_segmentos(img_cv2, detections):
     return img_cv2
 
 # --- FUNCIONES DE TILING ---
-def split_image_into_tiles(image_np, tile_size, overlap):
-    h, w = image_np.shape[:2]
-    stride = int(tile_size * (1 - overlap))
-    tiles = []
-    
-    for y in range(0, h - tile_size + 1, stride):
-        for x in range(0, w - tile_size + 1, stride):
-            if y + tile_size > h:
-                y = h - tile_size
-            if x + tile_size > w:
-                x = w - tile_size
-            
-            tile = image_np[y:y+tile_size, x:x+tile_size]
-            tiles.append((tile, x, y))
-            
-            if x + tile_size == w:
-                break
-        if y + tile_size == h:
-            break
-    
-    return tiles
-
-def nms_boxes(boxes, scores, iou_threshold=0.5):
-    if len(boxes) == 0:
-        return []
-    
-    boxes = np.array(boxes).astype(np.float32)
-    scores = np.array(scores)
-    
-    x1 = boxes[:, 0]; y1 = boxes[:, 1]; x2 = boxes[:, 2]; y2 = boxes[:, 3]
-    areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-    
-    order = scores.argsort()[::-1]
-    keep = []
-    
-    while order.size > 0:
-        i = order[0]
-        keep.append(i)
-        
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-        
-        w = np.maximum(0.0, xx2 - xx1 + 1)
-        h = np.maximum(0.0, yy2 - yy1 + 1)
-        inter = w * h
-        
-        ovr = inter / (areas[i] + areas[order[1:]] - inter)
-        inds = np.where(ovr <= iou_threshold)[0]
-        order = order[inds + 1]
-    
-    return keep
-
 def procesar_con_tiling(model, image_pil, class_thresholds, iou_threshold, cm_per_pixel,
                        tile_size=640, overlap=0.2, min_conf=0.05):
     img_np = np.array(image_pil)
@@ -599,49 +503,53 @@ def procesar_con_tiling(model, image_pil, class_thresholds, iou_threshold, cm_pe
             if results[0].boxes is None:
                 continue
             
-            for box in results[0].boxes:
+            for i, box in enumerate(results[0].boxes):
                 cls_id = int(box.cls[0])
-                cls_name = model.names.get(cls_id, f"class_{cls_id}")
-                conf = float(box.conf[0])
-                
-                if conf < class_thresholds.get(cls_name, 0.05):
+                cls_name = normalizar_clase(model.names.get(cls_id, ""))
+                if cls_name is None:
                     continue
-                
+                conf = float(box.conf[0])
+
+                if conf < umbral_clase(class_thresholds, cls_name, 0.05):
+                    continue
+
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 x1 += x_off; y1 += y_off; x2 += x_off; y2 += y_off
-                
+
                 x1 = max(0, min(x1, w-1)); y1 = max(0, min(y1, h-1))
                 x2 = max(0, min(x2, w-1)); y2 = max(0, min(y2, h-1))
-                
+
                 if x2 <= x1 or y2 <= y1:
                     continue
-                
+
                 all_detections_raw.append({
                     "Clase": cls_name,
                     "Confianza": conf,
                     "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                     "Ancho_px": x2 - x1,
                     "Alto_px": y2 - y1,
+                    "_poly": _poligono_mascara(results[0], i, x_off, y_off),
                 })
         except Exception as e:
             inference_log.append({"tile": (x_off, y_off), "error": str(e), "status": "failed"})
-    
+
     if all_detections_raw:
         boxes_by_class = {}
         scores_by_class = {}
-        
+        polys_by_class = {}
+
         for d in all_detections_raw:
             cls = d["Clase"]
             boxes_by_class.setdefault(cls, []).append([d["x1"], d["y1"], d["x2"], d["y2"]])
             scores_by_class.setdefault(cls, []).append(d["Confianza"])
-        
+            polys_by_class.setdefault(cls, []).append(d.get("_poly"))
+
         final_detections = []
-        # spalling con IoU mas estricto: evita cajas duplicadas superpuestas en bloques contiguos
-        iou_por_clase = {"spalling": 0.35}
+        # NMS por clase con el mismo IoU para las 3 clases (0.45 por defecto).
         for cls, boxes in boxes_by_class.items():
             scores = scores_by_class[cls]
-            keep = nms_boxes(boxes, scores, iou_por_clase.get(cls, iou_threshold))
-            
+            keep = nms_boxes(boxes, scores, iou_threshold)
+
             for idx in keep:
                 d = {
                     "Clase": cls,
@@ -650,16 +558,18 @@ def procesar_con_tiling(model, image_pil, class_thresholds, iou_threshold, cm_pe
                     "x2": boxes[idx][2], "y2": boxes[idx][3],
                     "Ancho_px": boxes[idx][2] - boxes[idx][0],
                     "Alto_px": boxes[idx][3] - boxes[idx][1],
+                    "_poly": polys_by_class[cls][idx],
                 }
                 final_detections.append(d)
     else:
         final_detections = []
-    
+
     detections_filtradas = filtrar_falsos_positivos(final_detections, img_cv2.shape, class_thresholds, img_cv2)
     detections_filtradas = agrupar_zonas(detections_filtradas)
-    
+
     for d in detections_filtradas:
-        area_cm2 = (d["Ancho_px"] * d["Alto_px"]) * (cm_per_pixel ** 2)
+        # Area real de la zona (union sin solapes), no la del recuadro envolvente
+        area_cm2 = d.get("Area_px", d["Ancho_px"] * d["Alto_px"]) * (cm_per_pixel ** 2)
         d["Area_cm2"] = round(area_cm2, 2)
         d["Area_m2"] = round(area_cm2 / 10000, 5)
     
@@ -743,12 +653,14 @@ def process_image_sillar(model, image, class_thresholds, iou_threshold, cm_per_p
         height, width = img_cv2.shape[:2]
         detections_raw = []
         
-        for box in result.boxes:
+        for i, box in enumerate(result.boxes):
             cls_id = int(box.cls[0])
-            cls_name = model.names.get(cls_id, f"class_{cls_id}")
+            cls_name = normalizar_clase(model.names.get(cls_id, ""))
+            if cls_name is None:
+                continue
             conf = float(box.conf[0])
-            
-            if conf < class_thresholds.get(cls_name, 0.25):
+
+            if conf < umbral_clase(class_thresholds, cls_name, 0.25):
                 continue
             
             x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -762,12 +674,13 @@ def process_image_sillar(model, image, class_thresholds, iou_threshold, cm_per_p
                 "Ancho_px": w_box, "Alto_px": h_box,
                 "Area_cm2": round(area_cm2, 2),
                 "Area_m2": round(area_cm2 / 10000, 5),
+                "_poly": _poligono_mascara(result, i),
             })
-        
+
         detections_filtradas = filtrar_falsos_positivos(detections_raw, img_cv2.shape, class_thresholds, img_cv2)
         detections_filtradas = agrupar_zonas(detections_filtradas)
         for d in detections_filtradas:
-            area_cm2 = (d["Ancho_px"] * d["Alto_px"]) * (cm_per_pixel ** 2)
+            area_cm2 = d.get("Area_px", d["Ancho_px"] * d["Alto_px"]) * (cm_per_pixel ** 2)
             d["Area_cm2"] = round(area_cm2, 2)
             d["Area_m2"] = round(area_cm2 / 10000, 5)
         
@@ -1843,7 +1756,15 @@ with st.sidebar:
     REC_CRACK = 0.20
     REC_HUMIDITY = 0.30
     REC_SPALLING = 0.60
-    REC_IOU = 0.45
+    REC_IOU = IOU_NMS
+
+    modo_deteccion = st.radio(
+        "Modo de deteccion",
+        ["Recomendado (detecta mas danos)", "Alta confiabilidad (85%)"],
+        key="modo_deteccion",
+        help="En alta confiabilidad ninguna deteccion por debajo del 85% se muestra ni se guarda.",
+    )
+    alta_confiabilidad = modo_deteccion.startswith("Alta")
 
     # Boton de restauracion de calibracion recomendada
     if st.button("↺ Restaurar calibracion recomendada", use_container_width=True):
@@ -1867,6 +1788,11 @@ with st.sidebar:
                            key="t_spalling")
 
     class_thresholds = {"crack": t_crack, "humidity": t_humidity, "spalling": t_spalling}
+    if alta_confiabilidad:
+        # Piso del 85%: los sliders solo pueden subir el umbral, nunca bajarlo
+        class_thresholds = {c: max(v, UMBRAL_ALTA_CONFIABILIDAD) for c, v in class_thresholds.items()}
+        st.caption("Modo 85% activo: umbral efectivo " +
+                   ", ".join(f"{c} {v:.0%}" for c, v in class_thresholds.items()))
     iou_threshold = st.slider("IoU Threshold", min_value=0.1, max_value=0.9,
                               value=st.session_state.get("t_iou", REC_IOU), step=0.05,
                               key="t_iou")
