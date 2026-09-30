@@ -135,10 +135,10 @@ def listar_imagenes(rutas):
     return imagenes
 
 
-def pruebas_modelo(imagenes, salida, gsd):
+def pruebas_modelo(imagenes, salida, gsd, ruta_modelo=None):
     from ultralytics import YOLO
 
-    modelo = YOLO(da._resolver_ruta_recurso(da.MODEL_PATH))
+    modelo = YOLO(ruta_modelo or da._resolver_ruta_recurso(da.MODEL_PATH))
     print(f"\n== 5. Modelo: tarea={modelo.task}, clases={modelo.names} ==")
     no_validas = [n for n in modelo.names.values() if md.normalizar_clase(n) is None]
     comprobar("todas las clases del modelo se reconocen", not no_validas,
@@ -174,6 +174,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("rutas", nargs="*", help="imágenes o carpetas a procesar con best.pt")
     parser.add_argument("--salida", default="verificacion_salida", help="carpeta de imágenes anotadas")
+    parser.add_argument("--modelo", default=None, help="pesos a probar (por defecto best.pt de la app)")
     parser.add_argument("--gsd", type=float, default=0.13, help="cm por píxel (por defecto 0.13)")
     args = parser.parse_args()
 
@@ -181,7 +182,7 @@ def main():
     if args.rutas:
         imagenes = listar_imagenes(args.rutas)
         if imagenes:
-            pruebas_modelo(imagenes, args.salida, args.gsd)
+            pruebas_modelo(imagenes, args.salida, args.gsd, args.modelo)
 
     print("\n" + ("TODO CORRECTO" if not _fallos else f"{len(_fallos)} COMPROBACIÓN(ES) FALLIDA(S):"))
     for f in _fallos:

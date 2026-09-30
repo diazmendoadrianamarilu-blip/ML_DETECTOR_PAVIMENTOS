@@ -10,7 +10,7 @@ from datetime import datetime
 
 # ✅ CORRECCIÓN: Usar carpeta del usuario para logs (evita PermissionError en Program Files)
 log_dir = Path.home() / "Documents" / "HeritageDetector"
-log_dir.mkdir(exist_ok=True)
+log_dir.mkdir(parents=True, exist_ok=True)
 log_file = log_dir / "alertas.log"
 
 # Configurar logging con ruta segura
